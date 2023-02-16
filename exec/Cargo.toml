@@ -1,0 +1,18 @@
+[package]
+name = "exec"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+anyhow = "1.0.69"
+clap = { version = "4.1.4", features = ["derive", "unicode"] }
+console = { version = "0.15.5", features = ["unicode-width"] }
+dialoguer = "0.10.3"
+env_logger = "0.10.0"
+indicatif = "0.17.3"
+log = "0.4.17"
+reqwest = { version = "0.11.14", features = ["blocking", "json"] }
+git = { path = "../git" }
+serde = { version = "1.0.152", features = ["derive"] }
