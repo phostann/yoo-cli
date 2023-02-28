@@ -1,38 +1,20 @@
-use std::{
-    io::{BufReader, Read},
-    process::{Command, Stdio},
-    vec,
-};
+use anyhow::{Context, Result};
+use git2::Repository;
 
-pub fn clone(repo: &str) {
-    exec_git_command(vec![
-        "clone",
-        repo,
-        ".", // clone into the current directory
-    ])
+pub fn clone(repo: &str) -> Result<()> {
+    Repository::clone(repo, ".").with_context(|| "Failed to clone git repository")?;
+    Ok(())
 }
 
 // git init command
-pub fn init() {
-    exec_git_command(vec!["init"])
+pub fn init() -> Result<()> {
+    Repository::init(".").with_context(|| "Failed to init git repository")?;
+    Ok(())
 }
 
-fn exec_git_command(args: Vec<&str>) {
-    let child = Command::new("git")
-        .args(args.clone())
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap_or_else(|_| panic!("Failed to execute process: git {}", args.join(" ")));
-
-    let mut reader = BufReader::new(child.stdout.expect("Failed to read from process"));
-
-    let mut buffer = String::new();
-
-    reader
-        .read_to_string(&mut buffer)
-        .expect("Failed to read from process");
-
-    println!("{}", buffer);
+pub fn is_git_project() -> Result<bool> {
+    Repository::open(".").with_context(|| "")?;
+    Ok(true)
 }
 
 // test
@@ -42,6 +24,6 @@ mod tests {
 
     #[test]
     fn test_clone() {
-        clone("https://github.com/phostann/host-template.git");
+        clone("https://github.com/phostann/host-template.git").expect("Failed to clone git repository");
     }
 }

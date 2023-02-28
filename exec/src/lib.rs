@@ -1,7 +1,10 @@
-use anyhow::Result;
+use anyhow::{Result, Context};
 use clap::{Parser, Subcommand};
+use tracing::Level;
+use tracing_subscriber::FmtSubscriber;
 
 mod create;
+mod submit;
 
 #[derive(Parser)]
 #[command(name = "yoo")]
@@ -14,6 +17,9 @@ mod create;
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
+
+    #[arg(short,long, default_value_t = false)]
+    debug: bool
 }
 
 #[derive(Subcommand)]
@@ -23,22 +29,29 @@ enum Commands {
     },
     /// Upload the project
     Submit {
-        #[arg(short, long)]
-        test: bool,
     },
 }
 
 pub fn init() -> Result<()> {
-
     env_logger::init();
 
     let cli = Cli::parse();
+
+    let level = if cli.debug { Level::DEBUG } else { Level::INFO };
+
+    let subscriber = FmtSubscriber::builder()
+    .with_max_level(level)
+    .finish();
+
+    tracing::subscriber::set_global_default(subscriber)
+    .with_context(|| format!("Failed to set global default subscriber" ))?;
+
     match cli.command {
         Some(Commands::Create{}) => {
-            create::create();
+            return create::create();
         }
-        Some(Commands::Submit { test }) => {
-            println!("test: {}", test);
+        Some(Commands::Submit { }) => {
+            return submit::submit();
         }
         None => {
             println!("Nothing to do");

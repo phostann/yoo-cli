@@ -8,6 +8,8 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0.69"
 exec = { path = "exec" }
+tracing = "0.1.37"
+tracing-subscriber = "0.3.16"
 
 [workspace]
 members = ["git", "exec"]
