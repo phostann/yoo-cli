@@ -9,6 +9,8 @@ use std::{
     path::PathBuf,
 };
 
+use crate::Cli;
+
 #[derive(Debug, Deserialize)]
 struct Response {
     code: i32,
@@ -29,7 +31,7 @@ struct Template {
 }
 
 // check the current directory and ask the user if they want to continue
-pub(crate) fn create() -> Result<()> {
+pub(crate) fn create(cli: &Cli) -> Result<()> {
     // get working directory
     let working_dir = env::current_dir().with_context(|| "Failed to get working director")?;
 
@@ -64,9 +66,14 @@ pub(crate) fn create() -> Result<()> {
             return Err(anyhow::Error::msg("User canceled the operation"));
         }
     }
+
+    let server_url = cli
+        .server
+        .as_deref()
+        .with_context(|| "SERVER is not set")?;
+
     // show the project list
-    let resp = reqwest::blocking::get("http://192.168.31.120:8989/templates")
-        .with_context(|| "Failed to get the templates")?;
+    let resp = reqwest::blocking::get(server_url).with_context(|| "Failed to get the templates")?;
 
     if resp.status() != 200 {
         return Err(anyhow::Error::msg("Failed to get the templates"));
@@ -75,7 +82,6 @@ pub(crate) fn create() -> Result<()> {
     let resp = resp
         .json::<Response>()
         .with_context(|| "Failed to parse the response")?;
-
     if resp.code != 0 {
         return Err(anyhow::Error::msg("Failed to get the templates"));
     }
@@ -110,8 +116,8 @@ pub(crate) fn create() -> Result<()> {
     }
 
     // init the git repo
-    tracing::info!("Initializing the git repository");
     git::init()?;
+    tracing::info!("Git repository initialized");
 
     Ok(())
     // use gitlab api to create a new repo and cache the info
