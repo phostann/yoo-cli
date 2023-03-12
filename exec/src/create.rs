@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use console::{style, Emoji};
-use inquire::{validator::Validation, Confirm, Select, Text};
+use inquire::{required, validator::Validation, Confirm, Select, Text};
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde::Deserialize;
@@ -51,7 +51,9 @@ pub(crate) fn create(cli: &Cli) -> Result<()> {
     })
     .prompt().with_context(|| "Failed to interact with the user")?;
 
+    let desc_validator = required!("The description can't be empty");
     let project_description = Text::new("Please enter the project description:")
+        .with_validator(desc_validator)
         .prompt()
         .with_context(|| "Failed to interact with the user")?;
 
@@ -134,14 +136,14 @@ pub(crate) fn create(cli: &Cli) -> Result<()> {
     }
 
     // show the options of the templates
-    let repo_options = resp
+    let repo_options: Vec<String> = resp
         .data
         .content
         .iter()
-        .map(|x| x.name.as_str())
-        .collect::<Vec<&str>>();
+        .map(|x| format!("{} -- {}", x.name, x.brief))
+        .collect();
 
-    let repo_ans: &str = Select::new("Please select a template:", repo_options)
+    let repo_ans: String = Select::new("Please select a template:", repo_options)
         .prompt()
         .with_context(|| "Failed to interact with the user")?;
 
@@ -149,8 +151,8 @@ pub(crate) fn create(cli: &Cli) -> Result<()> {
         .data
         .content
         .iter()
-        .find(|x| x.name == repo_ans)
-        .unwrap();
+        .find(|x| format!("{} -- {}", x.name, x.brief) == repo_ans)
+        .with_context(|| "Failed to find the template")?;
 
     // clone the repo
     let pb = loading("Cloning")?;
@@ -270,13 +272,7 @@ mod tests {
 
     #[test]
     fn test_create_project() {
-        create_new_repo(
-            "https://gitlab.com",
-            "",
-            64903429,
-            "test",
-            "test project",
-        )
-        .expect("Failed to create the new repo");
+        create_new_repo("https://gitlab.com", "", 64903429, "test", "test project")
+            .expect("Failed to create the new repo");
     }
 }
