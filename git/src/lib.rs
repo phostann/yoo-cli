@@ -3,97 +3,139 @@ use std::env;
 use anyhow::{Context, Result};
 use git2::{Cred, Repository};
 
-pub fn clone(repo: &str) -> Result<()> {
-    Repository::clone(repo, ".").with_context(|| "Failed to clone git repository")?;
-    Ok(())
+pub struct GitRepo {
+    repo: Repository,
 }
 
-// git init command
-pub fn init() -> Result<()> {
-    Repository::init(".").with_context(|| "Failed to init git repository")?;
-    Ok(())
+pub fn open_repo(path: &str) -> Result<GitRepo> {
+    let repo = Repository::open(path).with_context(|| "Failed to open the repository")?;
+    Ok(GitRepo { repo })
 }
 
-pub fn is_git_project() -> Result<bool> {
-    Repository::open(".").with_context(|| "Failed to open the repository")?;
-    Ok(true)
+pub fn clone(repo: &str, path: &str) -> Result<GitRepo> {
+    Repository::clone(repo, path).with_context(|| "Failed to clone git repository")?;
+    open_repo(path)
 }
 
-pub fn has_uncommitted_changes() -> Result<bool> {
-    let repo = Repository::open(".").with_context(|| "Failed to open the repository")?;
-
-    let statuses = repo
-        .statuses(None)
-        .with_context(|| "Failed to get the status of the repository")?;
-
-    if !statuses.is_empty() {
-        return Ok(true);
+impl GitRepo {
+    pub fn delete_remote(&self) -> Result<()> {
+        self.repo
+            .remote_delete("origin")
+            .with_context(|| "Failed to delete the remote")?;
+        Ok(())
     }
 
-    Ok(false)
-}
+    pub fn checkout_to_dev(&self) -> Result<()> {
+        let refname = "dev";
+        let head = self.repo.head().with_context(|| "Failed to get the head")?;
+        let commit = head
+            .peel_to_commit()
+            .with_context(|| "Failed to get the commit")?;
 
-pub fn push(branch: &str) -> Result<()> {
-    let repo = Repository::open(".").with_context(|| "Failed to open the repository")?;
-    let mut remote = repo
-        .find_remote("origin")
-        .with_context(|| "Failed to push the repository")?;
+        self.repo
+            .branch(refname, &commit, false)
+            .with_context(|| "Failed to create the branch")?;
 
-    let branch = repo
-        .find_branch(branch, git2::BranchType::Local)
-        .with_context(|| "Failed to find the branch")?;
+        let (object, reference) = self
+            .repo
+            .revparse_ext(refname)
+            .with_context(|| "Failed to get the object and reference")?;
 
-    let refs = branch.into_reference();
+        self.repo
+            .checkout_tree(&object, None)
+            .with_context(|| "Failed to checkout the tree")?;
 
-    let name = refs.name().with_context(|| "The reference name is none")?;
+        if let Some(gref) = reference {
+            self.repo
+                .set_head(
+                    gref.name().ok_or_else(|| {
+                        anyhow::Error::msg("Failed to get the name of the reference")
+                    })?,
+                )
+                .with_context(|| "Failed to set the head")?;
+        } else {
+            self.repo
+                .set_head_detached(object.id())
+                .with_context(|| "Failed to set the head")?;
+        }
 
-    let mut callbacks = git2::RemoteCallbacks::new();
+        Ok(())
+    }
 
-    callbacks.credentials(|_url, username_from_url, _allowed_types| {
-        tracing::debug!("username_from_url: {:?}", username_from_url);
-        Cred::ssh_key(
-            username_from_url.unwrap(),
-            None,
-            std::path::Path::new(&format!("{}/.ssh/id_ed25519", env::var("HOME").unwrap())),
-            None,
-        )
-    });
+    pub fn has_uncommitted_changes(&self) -> Result<bool> {
+        let statuses = self
+            .repo
+            .statuses(None)
+            .with_context(|| "Failed to get the status of the repository")?;
 
-    let mut options = git2::PushOptions::new();
+        if !statuses.is_empty() {
+            return Ok(true);
+        }
 
-    options.remote_callbacks(callbacks);
+        Ok(false)
+    }
 
-    // push the code to master branch
-    remote
-        .push(&[name], Some(&mut options))
-        .with_context(|| "Failed to push the repository")?;
+    pub fn push(&self, branch: &str) -> Result<()> {
+        let mut remote = self
+            .repo
+            .find_remote("origin")
+            .with_context(|| "Failed to push the repository")?;
 
-    Ok(())
-}
+        let branch = self
+            .repo
+            .find_branch(branch, git2::BranchType::Local)
+            .with_context(|| "Failed to find the branch")?;
 
-pub fn list_feature_branches() -> Result<Vec<String>> {
-    let repo = Repository::open(".").with_context(|| "Failed to open the repository")?;
-    let branches = repo
-        .branches(Some(git2::BranchType::Local))
-        .with_context(|| "Failed to get the branches")?
-        .filter_map(|b| {
-            match  b  {
-               Ok((branch, _)) if matches!(branch.name(), Ok(Some(name)) if name.starts_with("feature/")) => Some(branch.name().unwrap().unwrap().to_string()) ,
-               _ => None,
-            }
-        })
-        .collect::<Vec<String>>();
+        let refs = branch.into_reference();
 
-    Ok(branches)
-}
+        let name = refs.name().with_context(|| "The reference name is none")?;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+        let mut callbacks = git2::RemoteCallbacks::new();
 
-    #[test]
-    fn test_clone() {
-        clone("https://github.com/phostann/host-template.git")
-            .expect("Failed to clone git repository");
+        callbacks.credentials(|_url, username_from_url, _allowed_types| {
+            tracing::debug!("username_from_url: {:?}", username_from_url);
+            Cred::ssh_key(
+                username_from_url.unwrap(),
+                None,
+                std::path::Path::new(&format!("{}/.ssh/id_ed25519", env::var("HOME").unwrap())),
+                None,
+            )
+        });
+
+        let mut options = git2::PushOptions::new();
+
+        options.remote_callbacks(callbacks);
+
+        // push the code to master branch
+        remote
+            .push(&[name], Some(&mut options))
+            .with_context(|| "Failed to push the code")?;
+
+        Ok(())
+    }
+
+    pub fn list_feature_branches(&self) -> Result<Vec<String>> {
+        let branches = self
+            .repo
+            .branches(Some(git2::BranchType::Local))
+            .with_context(|| "Failed to get the branches")?
+            .filter_map(|b| {
+                match b {
+                    Ok((branch, _)) if matches!(branch.name(), Ok(Some(name)) if name.starts_with("feature/")) => {
+                        Some(branch.name().unwrap().unwrap().to_string())
+                    }
+                    _ => None,
+                }
+            })
+            .collect::<Vec<String>>();
+
+        Ok(branches)
+    }
+
+    pub fn set_remote(&self, repo_url: &str) -> Result<()> {
+        self.repo
+            .remote_set_url("origin", repo_url)
+            .with_context(|| "Failed to set the remote")?;
+        Ok(())
     }
 }

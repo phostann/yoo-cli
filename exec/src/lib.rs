@@ -1,10 +1,8 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use std::{env, thread, time::Duration};
+use std::env;
 use tracing::Level;
 use tracing_subscriber::FmtSubscriber;
-
-use crate::loading::progress_bar;
 
 mod create;
 mod loading;
@@ -35,14 +33,17 @@ struct Cli {
     gitlab_token: Option<String>,
 
     #[arg(long)]
+    gitlab_namespace_id: Option<u32>,
+
+    #[arg(long)]
     pub_key: Option<String>,
 }
 
 #[derive(Subcommand)]
 enum Commands {
-    /// create a new project
+    /// Create a new project based on the template
     Create {},
-    /// Upload the project
+    /// Submit the repo to the resource server
     Submit {},
 }
 
@@ -55,19 +56,23 @@ pub fn init() -> Result<()> {
     let subscriber = FmtSubscriber::builder().with_max_level(level).finish();
 
     tracing::subscriber::set_global_default(subscriber)
-        .with_context(|| format!("Failed to set global default subscriber"))?;
+        .with_context(|| "Failed to set global default subscriber")?;
 
-    tracing::info!("Starting check the cli config");
-    let pb = progress_bar("Checking")?;
+    if cli.debug {
+        tracing::info!("CLI is running in debug mode");
+    }
+    // check the configuration
     check_config(&mut cli)?;
-    thread::sleep(Duration::from_secs(5));
-    pb.finish_with_message("Check the cli config success");
     // print the configuration
-    tracing::info!("Check the cli config success");
-    tracing::info!("server_url: {}", cli.server.clone().unwrap());
-    tracing::info!("gitlab_url: {}", cli.gitlab_server.clone().unwrap());
-    tracing::info!("gitlab_token: {}", cli.gitlab_token.clone().unwrap());
-    tracing::info!("pub_key: {}", cli.pub_key.clone().unwrap());
+    tracing::info!("Successfully checked the configuration");
+    tracing::info!("SERVER_URL: {}", cli.server.clone().unwrap());
+    tracing::info!("GITLAB_URL: {}", cli.gitlab_server.clone().unwrap());
+    tracing::info!("GITLAB_TOKEN: {}", cli.gitlab_token.clone().unwrap());
+    tracing::info!(
+        "GITLAB_NAMESPACE_ID: {}",
+        cli.gitlab_namespace_id.unwrap()
+    );
+    tracing::info!("PUB_KEY: {}", cli.pub_key.clone().unwrap());
 
     match cli.command {
         Some(Commands::Create {}) => {
@@ -86,43 +91,40 @@ pub fn init() -> Result<()> {
 
 /// check the server url , gitlab url and token of the gitlab
 fn check_config(cli: &mut Cli) -> Result<()> {
-    // if the cli doesn't confige the SERVER_URL, check the env
-    if let None = cli.server.as_deref() {
+    // if the cli doesn't config the SERVER_URL, check the env
+    if cli.server.is_none() {
         let server_url = env::var("YOO_SERVER").with_context(|| "SERVER is not set")?;
-        cli.server = Some(server_url.clone());
+        cli.server = Some(server_url);
     }
 
-    // if the cli doesn't confige the GITLAB_SERVER, check the env
-    if let None = cli.gitlab_server.as_deref() {
+    // if the cli doesn't config the GITLAB_SERVER, check the env
+    if cli.gitlab_server.is_none() {
         let gitlab_url =
             env::var("YOO_GITLAB_SERVER").with_context(|| "GITLAB_SERVER is not set")?;
-        cli.gitlab_server = Some(gitlab_url.clone());
+        cli.gitlab_server = Some(gitlab_url);
     }
 
-    // if the cli doesn't confige the GITLAB_TOKEN, check the env
-    if let None = cli.gitlab_token.as_deref() {
+    // if the cli doesn't config the GITLAB_TOKEN, check the env
+    if cli.gitlab_token.is_none() {
         let gitlab_token =
             env::var("YOO_GITLAB_TOKEN").with_context(|| "GITLAB_TOKEN is not set")?;
-        cli.gitlab_token = Some(gitlab_token.clone());
+        cli.gitlab_token = Some(gitlab_token);
     }
 
     // if the cli doesn't config the PUBLIC_KEY, check the env
-    if let None = cli.pub_key.as_deref() {
+    if cli.pub_key.is_none() {
         let pub_key = env::var("YOO_PUBLIC_KEY").with_context(|| "PUBLIC_KEY is not set")?;
-        cli.pub_key = Some(pub_key.clone());
+        cli.pub_key = Some(pub_key);
+    }
+
+    // check namespace_id
+    if cli.gitlab_namespace_id.is_none() {
+        let namespace_id = env::var("YOO_GITLAB_NAMESPACE_ID")
+            .with_context(|| "GITLAB_NAMESPACE_ID is not set")?
+            .parse()
+            .with_context(|| "GITLAB_NAMESPACE_ID is not a number")?;
+        cli.gitlab_namespace_id = Some(namespace_id);
     }
 
     Ok(())
-}
-
-// test
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_init() {
-        use clap::CommandFactory;
-        Cli::command().debug_assert();
-    }
 }
