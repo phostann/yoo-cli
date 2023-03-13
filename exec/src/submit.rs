@@ -7,10 +7,11 @@ use inquire::Select;
 use crate::loading::loading;
 
 pub(crate) fn submit() -> Result<()> {
+    tracing::info!("Coming soon...");
     // prepare to submit
-    tracing::info!("Preparing to submit...");
-    let git_repo = check_repo()?;
-    push_repo(&git_repo)?;
+    // tracing::info!("Preparing to submit...");
+    // let git_repo = check_repo()?;
+    // push_repo(&git_repo)?;
     Ok(())
 }
 

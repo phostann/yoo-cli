@@ -1,29 +1,29 @@
 use anyhow::{Context, Result};
 use console::{style, Emoji};
 use inquire::{required, validator::Validation, Confirm, Select, Text};
-use once_cell::sync::Lazy;
 use regex::Regex;
-use serde::Deserialize;
+use reqwest::StatusCode;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     env,
     fmt::Display,
-    fs::{remove_dir_all, remove_file, DirEntry},
-    io::Error,
+    fs::{remove_dir_all, remove_file, DirEntry, File, OpenOptions},
+    io::{BufReader, BufWriter, Error},
 };
 
-use crate::{loading::loading, Cli};
+use crate::{loading::loading, Cli, CACHE_DIR, CACHE_FILE, REQUEST};
 
 #[derive(Debug, Deserialize)]
-struct Response {
+struct Response<T> {
     code: i32,
     // msg: String,
-    data: ResponseData,
+    data: T,
 }
 
 #[derive(Debug, Deserialize)]
-struct ResponseData {
-    content: Vec<Template>,
+struct PageData<T> {
+    content: Vec<T>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -33,11 +33,18 @@ struct Template {
     brief: String,
 }
 
-// lazy to initialize the reqwest client
-static REQUEST: Lazy<reqwest::blocking::Client> = Lazy::new(reqwest::blocking::Client::new);
+#[derive(Deserialize, Debug)]
+#[allow(dead_code)]
+struct Project {
+    id: i32,
+    name: String,
+    repo: String,
+    repo_id: i32,
+    description: String,
+}
 
 // check the current directory and ask the user if they want to continue
-pub(crate) fn create(cli: &Cli) -> Result<()> {
+pub(crate) fn create(cli: &mut Cli) -> Result<()> {
     // ask the user for the project name
     let project_name = Text::new("Please enter the project name:")
     .with_validator(|input: &str| {
@@ -125,7 +132,7 @@ pub(crate) fn create(cli: &Cli) -> Result<()> {
     }
 
     let resp = resp
-        .json::<Response>()
+        .json::<Response<PageData<Template>>>()
         .with_context(|| "Failed to parse the response")?;
 
     if resp.code != 0 {
@@ -164,19 +171,16 @@ pub(crate) fn create(cli: &Cli) -> Result<()> {
         selection.brief
     );
 
+    cli.repo_name = Some(project_name.clone());
+
     // remove the remote origin
     git_repo.delete_remote()?;
     tracing::info!("Successfully removed the remote origin");
 
     // create the new repo
     let pb = loading("Creating")?;
-    let repo = create_new_repo(
-        cli.gitlab_server.as_deref().unwrap(),
-        cli.gitlab_token.as_deref().unwrap(),
-        cli.gitlab_namespace_id.unwrap(),
-        project_name.as_str(),
-        &project_description,
-    )?;
+    let repo = create_new_repo(cli, project_name.as_str(), &project_description)?;
+    cli.repo_id = Some(repo.id);
     pb.finish_and_clear();
     tracing::info!("Successfully created the new repo");
     tracing::info!("Repo: {}", repo);
@@ -204,13 +208,32 @@ pub(crate) fn create(cli: &Cli) -> Result<()> {
     pb.finish_and_clear();
     tracing::info!("Successfully pushed the dev branch to the remote origin");
 
+    // register the project to the server
+    let pb = loading("Registering")?;
+    let register_resp = register_project(
+        cli,
+        &project_name,
+        &project_description,
+        &repo.ssh_url_to_repo,
+        repo.id,
+    )?;
+    pb.finish_and_clear();
+
+    if register_resp.code != 0 {
+        return Err(anyhow::Error::msg("Failed to register the project"));
+    }
+
+    tracing::info!("Successfully registered the project to the server");
+
+    tracing::info!("Now everything is ready. You can start to work on your project. keep coding!");
+
     Ok(())
     // use gitlab api to create a new repo and cache the info
 }
 
 #[derive(Debug, Deserialize)]
 struct RepoResponse {
-    id: u32,
+    id: i32,
     name: String,
     ssh_url_to_repo: String,
     web_url: String,
@@ -226,23 +249,20 @@ impl Display for RepoResponse {
     }
 }
 
-fn create_new_repo(
-    gitlab_server: &str,
-    gitlab_token: &str,
-    gitlab_namespace_id: u32,
-    name: &str,
-    description: &str,
-) -> Result<RepoResponse> {
+fn create_new_repo(cli: &Cli, name: &str, description: &str) -> Result<RepoResponse> {
     let mut map = HashMap::new();
     map.insert("name", name);
     map.insert("description", description);
-    let namespace_id = gitlab_namespace_id.to_string();
+    let namespace_id = cli.gitlab_namespace_id.unwrap().to_string();
     map.insert("namespace_id", namespace_id.as_str());
     map.insert("visibility", "internal");
 
     let res = REQUEST
-        .post(format!("{}/api/v4/projects", gitlab_server))
-        .header("PRIVATE-TOKEN", gitlab_token)
+        .post(format!(
+            "{}/api/v4/projects",
+            cli.gitlab_server.clone().unwrap()
+        ))
+        .header("PRIVATE-TOKEN", cli.gitlab_token.clone().unwrap())
         .json(&map)
         .send()
         .with_context(|| "Failed to create the new repo")?;
@@ -264,15 +284,164 @@ fn create_new_repo(
     Ok(repo)
 }
 
-// test
-#[cfg(test)]
+#[derive(Debug, Serialize)]
+struct NewProject {
+    name: String,
+    description: String,
+    repo: String,
+    repo_id: i32,
+}
 
-mod tests {
-    use super::*;
+fn register_project(
+    cli: &Cli,
+    name: &str,
+    description: &str,
+    repo: &str,
+    repo_id: i32,
+) -> Result<Response<Project>> {
+    let mut authorization = match read_authorization() {
+        Ok(auth) => auth,
+        Err(_) => {
+            let auth = login(
+                cli.server.as_ref().unwrap(),
+                cli.server_username.as_ref().unwrap(),
+                cli.server_password.as_ref().unwrap(),
+            )?;
 
-    #[test]
-    fn test_create_project() {
-        create_new_repo("https://gitlab.com", "", 64903429, "test", "test project")
-            .expect("Failed to create the new repo");
+            write_authorization(&auth)?;
+            auth
+        }
+    };
+
+    let payload = NewProject {
+        name: name.to_string(),
+        description: description.to_string(),
+        repo: repo.to_string(),
+        repo_id,
+    };
+
+    let resp = REQUEST
+        .post(format!("{}/project", cli.server.as_ref().unwrap()))
+        .header("Authorization", &authorization)
+        .json(&payload)
+        .send()
+        .with_context(|| "Failed to register the project")?;
+
+    match resp.status() {
+        StatusCode::OK => {
+            let res = resp
+                .json::<Response<Project>>()
+                .with_context(|| "Failed to parse the response")?;
+
+            Ok(res)
+        }
+        StatusCode::BAD_REQUEST => {
+            authorization = login(
+                cli.server.as_ref().unwrap(),
+                cli.server_username.as_ref().unwrap(),
+                cli.server_password.as_ref().unwrap(),
+            )?;
+
+            write_authorization(&authorization)?;
+
+            let resp = REQUEST
+                .post(format!("{}/project", cli.server.as_ref().unwrap()))
+                .header("Authorization", &authorization)
+                .json(&payload)
+                .send()
+                .with_context(|| "Failed to register the project")?;
+
+            if resp.status() != StatusCode::OK {
+                return Err(anyhow::Error::msg(
+                    "Failed to register the project".to_string(),
+                ));
+            }
+
+            let res = resp
+                .json::<Response<Project>>()
+                .with_context(|| "Failed to parse the response")?;
+
+            Ok(res)
+        }
+        _ => Err(anyhow::Error::msg(
+            "Failed to register the project".to_string(),
+        )),
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct AuthBody {
+    access_token: String,
+    refresh_token: String,
+    token_type: String,
+}
+
+fn login(server_url: &str, username: &str, password: &str) -> Result<String> {
+    let mut map = HashMap::new();
+    map.insert("username", username);
+    map.insert("password", password);
+
+    let resp = REQUEST
+        .post(format!("{}/login", server_url))
+        .json(&map)
+        .send()?;
+
+    // check the status code
+    if resp.status() != 200 {
+        return Err(anyhow::Error::msg("Failed to login".to_string()));
+    }
+
+    let auth_resp = resp
+        .json::<Response<AuthBody>>()
+        .with_context(|| "Failed to parse the response")?;
+
+    if auth_resp.code != 0 {
+        return Err(anyhow::Error::msg("Failed to login".to_string()));
+    }
+
+    Ok(format!(
+        "{} {}",
+        auth_resp.data.token_type, auth_resp.data.access_token
+    ))
+}
+
+fn read_authorization() -> Result<String> {
+    // get home dir
+    let home_dir = dirs::home_dir().with_context(|| "Failed to get the home dir")?;
+    let cache_file = home_dir.join(format!("{}/{}", CACHE_DIR, CACHE_FILE));
+    // read cache json file
+    let file = File::open(cache_file)?;
+    let reader = BufReader::new(file);
+    let cache: HashMap<String, String> = serde_json::from_reader(reader)?;
+    let token = cache.get("authorization");
+
+    if let Some(token) = token {
+        Ok(token.to_string())
+    } else {
+        Err(anyhow::Error::msg("Failed to read the token"))
+    }
+}
+
+fn write_authorization(authorization: &str) -> Result<()> {
+    let home_dir = dirs::home_dir().with_context(|| "Failed to get the home dir")?;
+    let cache_file = home_dir.join(format!("{}/{}", CACHE_DIR, CACHE_FILE));
+    // read cache json file
+    let mut cache: HashMap<String, String> = HashMap::new();
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(cache_file)?;
+
+    if file.metadata()?.len() > 0 {
+        let reader = BufReader::new(&file);
+        cache = serde_json::from_reader(reader)?;
+    }
+
+    cache.insert("authorization".to_string(), authorization.to_string());
+
+    // write cache json file
+    let writer = BufWriter::new(file);
+    serde_json::to_writer_pretty(writer, &cache)?;
+    Ok(())
 }
