@@ -1,20 +1,24 @@
-use std::env;
-
 use anyhow::{Context, Result};
 use git2::{Cred, Repository};
 
 pub struct GitRepo {
     repo: Repository,
+    username: String,
+    password: String,
 }
 
-pub fn open_repo(path: &str) -> Result<GitRepo> {
+pub fn open_repo(path: &str, username: String, password: String) -> Result<GitRepo> {
     let repo = Repository::open(path).with_context(|| "Failed to open the repository")?;
-    Ok(GitRepo { repo })
+    Ok(GitRepo {
+        repo,
+        username,
+        password,
+    })
 }
 
-pub fn clone(repo: &str, path: &str) -> Result<GitRepo> {
+pub fn clone(repo: &str, path: &str, username: String, password: String) -> Result<GitRepo> {
     Repository::clone(repo, path).with_context(|| "Failed to clone git repository")?;
-    open_repo(path)
+    open_repo(path, username, password)
 }
 
 impl GitRepo {
@@ -25,20 +29,19 @@ impl GitRepo {
         Ok(())
     }
 
-    pub fn checkout_to_dev(&self) -> Result<()> {
-        let refname = "dev";
+    pub fn checkout_to_branch(&self, branch: &str) -> Result<()> {
         let head = self.repo.head().with_context(|| "Failed to get the head")?;
         let commit = head
             .peel_to_commit()
             .with_context(|| "Failed to get the commit")?;
 
         self.repo
-            .branch(refname, &commit, false)
+            .branch(branch, &commit, false)
             .with_context(|| "Failed to create the branch")?;
 
         let (object, reference) = self
             .repo
-            .revparse_ext(refname)
+            .revparse_ext(branch)
             .with_context(|| "Failed to get the object and reference")?;
 
         self.repo
@@ -91,15 +94,10 @@ impl GitRepo {
         let name = refs.name().with_context(|| "The reference name is none")?;
 
         let mut callbacks = git2::RemoteCallbacks::new();
-
-        callbacks.credentials(|_url, username_from_url, _allowed_types| {
-            tracing::debug!("username_from_url: {:?}", username_from_url);
-            Cred::ssh_key(
-                username_from_url.unwrap(),
-                None,
-                std::path::Path::new(&format!("{}/.ssh/id_ed25519", env::var("HOME").unwrap())),
-                None,
-            )
+        callbacks.credentials(|_url, _username_from_url, _allowed_types| {
+            // print username and password
+            tracing::debug!("username: {}, password: {}", &self.username, &self.password);
+            Cred::userpass_plaintext(&self.username, &self.password)
         });
 
         let mut options = git2::PushOptions::new();
@@ -114,18 +112,16 @@ impl GitRepo {
         Ok(())
     }
 
-    pub fn list_feature_branches(&self) -> Result<Vec<String>> {
+    pub fn list_branches(&self) -> Result<Vec<String>> {
         let branches = self
             .repo
             .branches(Some(git2::BranchType::Local))
             .with_context(|| "Failed to get the branches")?
-            .filter_map(|b| {
-                match b {
-                    Ok((branch, _)) if matches!(branch.name(), Ok(Some(name)) if name.starts_with("feature/")) => {
-                        Some(branch.name().unwrap().unwrap().to_string())
-                    }
-                    _ => None,
+            .filter_map(|b| match b {
+                Ok((branch, _)) if branch.name().is_ok() && branch.name().unwrap().is_some() => {
+                    Some(branch.name().unwrap().unwrap().to_string())
                 }
+                _ => None,
             })
             .collect::<Vec<String>>();
 

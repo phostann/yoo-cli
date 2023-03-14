@@ -29,29 +29,41 @@ struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
 
+    /// Enable debug mode
     #[arg(short, long, default_value_t = false)]
     debug: bool,
 
+    /// The yoo server address
     #[arg(long)]
     server: Option<String>,
 
-    #[arg(long)]
-    gitlab_server: Option<String>,
-
-    #[arg(long)]
-    gitlab_token: Option<String>,
-
-    #[arg(long)]
-    gitlab_namespace_id: Option<u32>,
-
-    #[arg(long)]
-    pub_key: Option<String>,
-
+    /// The yoo server username
     #[arg(long)]
     server_username: Option<String>,
 
+    /// The yoo server password
     #[arg(long)]
     server_password: Option<String>,
+
+    /// The gitlab server address
+    #[arg(long)]
+    gitlab_server: Option<String>,
+
+    /// The gitlab username
+    #[arg(long)]
+    gitlab_username: Option<String>,
+
+    /// The gitlab password
+    #[arg(long)]
+    gitlab_password: Option<String>,
+
+    /// The gitlab token
+    #[arg(long)]
+    gitlab_token: Option<String>,
+
+    /// The gitlab group id
+    #[arg(long)]
+    gitlab_namespace_id: Option<u32>,
 
     repo_id: Option<i32>,
 
@@ -63,7 +75,11 @@ enum Commands {
     /// Create a new project based on the template
     Create {},
     /// Submit the repo to the resource server
-    Submit {},
+    Submit {
+        /// Specify the branch to submit
+        #[arg(long)]
+        branch: Option<String>,
+    },
 }
 
 impl Cli {
@@ -105,7 +121,10 @@ pub fn init() -> Result<()> {
 
     let level = if cli.debug { Level::DEBUG } else { Level::INFO };
 
-    let subscriber = FmtSubscriber::builder().with_max_level(level).finish();
+    let subscriber = FmtSubscriber::builder()
+        .with_max_level(level)
+        .with_ansi(true)
+        .finish();
 
     tracing::subscriber::set_global_default(subscriber)
         .with_context(|| "Failed to set global default subscriber")?;
@@ -119,12 +138,12 @@ pub fn init() -> Result<()> {
     // check the configuration
     check_config(&mut cli)?;
     // print the configuration
-    tracing::info!("Successfully checked the configuration");
+    tracing::info!("Your configuration is as follows: ");
     tracing::info!("SERVER_URL: {}", cli.server.clone().unwrap());
     tracing::info!("GITLAB_URL: {}", cli.gitlab_server.clone().unwrap());
     tracing::info!("GITLAB_TOKEN: {}", cli.gitlab_token.clone().unwrap());
     tracing::info!("GITLAB_NAMESPACE_ID: {}", cli.gitlab_namespace_id.unwrap());
-    tracing::info!("PUB_KEY: {}", cli.pub_key.clone().unwrap());
+    tracing::info!("GITLAB_USERNAME: {}", cli.gitlab_username.clone().unwrap());
     tracing::info!("SERVER_USERNAME: {}", cli.server_username.clone().unwrap());
     // tracing::info!("SERVER_PASSWORD: {}", cli.server_password.clone().unwrap());
 
@@ -143,12 +162,12 @@ pub fn init() -> Result<()> {
                 Ok(())
             }
         },
-        Some(Commands::Submit {}) => submit::submit(),
+        Some(Commands::Submit { ref branch }) => submit::submit(&cli, branch.clone()),
         None => Ok(()),
     }
 }
 
-/// check the server url , gitlab url and token of the gitlab
+// check the environment variable configuration
 fn check_config(cli: &mut Cli) -> Result<()> {
     // if the cli doesn't config the SERVER_URL, check the env
     if cli.server.is_none() {
@@ -170,10 +189,18 @@ fn check_config(cli: &mut Cli) -> Result<()> {
         cli.gitlab_token = Some(gitlab_token);
     }
 
-    // if the cli doesn't config the PUBLIC_KEY, check the env
-    if cli.pub_key.is_none() {
-        let pub_key = env::var("YOO_PUBLIC_KEY").with_context(|| "PUBLIC_KEY is not set")?;
-        cli.pub_key = Some(pub_key);
+    // if the cli doesn't config the GITLAB_USERNAME, check the env
+    if cli.gitlab_username.is_none() {
+        let gitlab_username =
+            env::var("YOO_GITLAB_USERNAME").with_context(|| "GITLAB_USERNAME is not set")?;
+        cli.gitlab_username = Some(gitlab_username);
+    }
+
+    // if the cli doesn't config the GITLAB_PASSWORD, check the env
+    if cli.gitlab_password.is_none() {
+        let gitlab_password =
+            env::var("YOO_GITLAB_PASSWORD").with_context(|| "GITLAB_PASSWORD is not set")?;
+        cli.gitlab_password = Some(gitlab_password);
     }
 
     // check namespace_id

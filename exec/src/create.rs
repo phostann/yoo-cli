@@ -78,6 +78,7 @@ pub(crate) fn create(cli: &mut Cli) -> Result<()> {
     if !project_dir.exists() {
         std::fs::create_dir(&project_dir)
             .with_context(|| "Failed to create the project directory")?;
+        cli.repo_name = Some(project_name.clone());
         tracing::info!("Successfully created the project directory")
     }
 
@@ -163,7 +164,12 @@ pub(crate) fn create(cli: &mut Cli) -> Result<()> {
 
     // clone the repo
     let pb = loading("Cloning")?;
-    let git_repo = git::clone(&selection.repo, project_path)?;
+    let git_repo = git::clone(
+        &selection.repo,
+        project_path,
+        cli.gitlab_username.clone().unwrap(),
+        cli.gitlab_password.clone().unwrap(),
+    )?;
     pb.finish_and_clear();
     tracing::info!(
         "Successfully created the project based on the template: {} -- {}",
@@ -186,10 +192,10 @@ pub(crate) fn create(cli: &mut Cli) -> Result<()> {
     tracing::info!("Repo: {}", repo);
 
     // add the remote origin
-    git_repo.set_remote(repo.ssh_url_to_repo.as_str())?;
+    git_repo.set_remote(repo.http_url_to_repo.as_str())?;
     tracing::info!(
         "Successfully added the remote origin: {}",
-        repo.ssh_url_to_repo
+        repo.http_url_to_repo
     );
 
     // push the master branch to the remote origin
@@ -199,7 +205,7 @@ pub(crate) fn create(cli: &mut Cli) -> Result<()> {
     tracing::info!("Successfully pushed the master branch to the remote origin");
 
     // create and checkout to dev branch
-    git_repo.checkout_to_dev()?;
+    git_repo.checkout_to_branch("dev")?;
     tracing::info!("Successfully created and checked out to dev branch");
 
     // push the dev branch to the remote origin
@@ -214,7 +220,7 @@ pub(crate) fn create(cli: &mut Cli) -> Result<()> {
         cli,
         &project_name,
         &project_description,
-        &repo.ssh_url_to_repo,
+        &repo.http_url_to_repo,
         repo.id,
     )?;
     pb.finish_and_clear();
@@ -235,7 +241,7 @@ pub(crate) fn create(cli: &mut Cli) -> Result<()> {
 struct RepoResponse {
     id: i32,
     name: String,
-    ssh_url_to_repo: String,
+    http_url_to_repo: String,
     web_url: String,
 }
 
@@ -244,7 +250,7 @@ impl Display for RepoResponse {
         write!(
             f,
             "id: {}, name: {}, ssh_url_to_repo: {}, web_url: {}",
-            self.id, self.name, self.ssh_url_to_repo, self.web_url
+            self.id, self.name, self.http_url_to_repo, self.web_url
         )
     }
 }
@@ -370,6 +376,7 @@ fn register_project(
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct AuthBody {
     access_token: String,
     refresh_token: String,
