@@ -1,6 +1,6 @@
 If you wan't to use yoo cli to help you in your work, you should do the following steps:
 
-1. download the yoo.exe file from the release
+1. download the executable file from the release
 2. config the env variable
 
 ```zsh
@@ -15,10 +15,10 @@ export YOO_GITLAB_TOKEN=****
 export YOO_GITLAB_NAMESPACE_ID=****
 ```
 
-3. link the yoo.exe to your path
+3. link the executable file to your path
 
 ```zsh
-export PATH=$PATH:/path/to/yoo.exe # replace the path/to/yoo.exe with your yoo.exe path
+export PATH=$PATH:/path/to/yoo # replace the path/to/yoo with your actual path
 ```
 
 there is some different between the windows and unix, so you should config the env variable in different way.
