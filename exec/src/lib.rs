@@ -2,8 +2,8 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use once_cell::sync::Lazy;
 use std::env;
-use tracing::Level;
-use tracing_subscriber::FmtSubscriber;
+use tracing::metadata::LevelFilter;
+use tracing_subscriber::{prelude::__tracing_subscriber_SubscriberExt, Layer};
 
 use crate::loading::loading;
 
@@ -56,6 +56,10 @@ struct Cli {
     /// The gitlab password
     #[arg(long)]
     gitlab_password: Option<String>,
+
+    /// The private key of your gitlab account
+    #[arg(long)]
+    gitlab_private_key: Option<String>,
 
     /// The gitlab token
     #[arg(long)]
@@ -117,14 +121,23 @@ impl Cli {
 
 /// init the cli
 pub fn init() -> Result<()> {
+    loading("Initializing...")?.finish_and_clear();
+
     let mut cli = Cli::parse();
 
-    let level = if cli.debug { Level::DEBUG } else { Level::INFO };
+    let level_filter = if cli.debug {
+        LevelFilter::DEBUG
+    } else {
+        LevelFilter::INFO
+    };
 
-    let subscriber = FmtSubscriber::builder()
-        .with_max_level(level)
-        .with_ansi(true)
-        .finish();
+    let enable_ansi = true;
+
+    let layer = tracing_subscriber::fmt::Layer::new()
+        .with_ansi(enable_ansi)
+        .with_filter(level_filter);
+
+    let subscriber = tracing_subscriber::registry().with(layer);
 
     tracing::subscriber::set_global_default(subscriber)
         .with_context(|| "Failed to set global default subscriber")?;
@@ -137,6 +150,7 @@ pub fn init() -> Result<()> {
 
     // check the configuration
     check_config(&mut cli)?;
+
     // print the configuration
     tracing::info!("Your configuration is as follows: ");
     tracing::info!("SERVER_URL: {}", cli.server.clone().unwrap());
@@ -189,18 +203,34 @@ fn check_config(cli: &mut Cli) -> Result<()> {
         cli.gitlab_token = Some(gitlab_token);
     }
 
-    // if the cli doesn't config the GITLAB_USERNAME, check the env
-    if cli.gitlab_username.is_none() {
-        let gitlab_username =
-            env::var("YOO_GITLAB_USERNAME").with_context(|| "GITLAB_USERNAME is not set")?;
-        cli.gitlab_username = Some(gitlab_username);
+    let mut check_user_pass = false;
+
+    // check gitlab private key, if private key is not set, check gitlab username and password
+    if cli.gitlab_private_key.is_none() {
+        match env::var("YOO_GITLAB_PRIVATE_KEY") {
+            Ok(private_key) => {
+                cli.gitlab_private_key = Some(private_key);
+            }
+            Err(_) => {
+                check_user_pass = true;
+            }
+        }
     }
 
-    // if the cli doesn't config the GITLAB_PASSWORD, check the env
-    if cli.gitlab_password.is_none() {
-        let gitlab_password =
-            env::var("YOO_GITLAB_PASSWORD").with_context(|| "GITLAB_PASSWORD is not set")?;
-        cli.gitlab_password = Some(gitlab_password);
+    if check_user_pass {
+        // if the cli doesn't config the GITLAB_USERNAME, check the env
+        if cli.gitlab_username.is_none() {
+            let gitlab_username =
+                env::var("YOO_GITLAB_USERNAME").with_context(|| "GITLAB_USERNAME is not set")?;
+            cli.gitlab_username = Some(gitlab_username);
+        }
+
+        // if the cli doesn't config the GITLAB_PASSWORD, check the env
+        if cli.gitlab_password.is_none() {
+            let gitlab_password =
+                env::var("YOO_GITLAB_PASSWORD").with_context(|| "GITLAB_PASSWORD is not set")?;
+            cli.gitlab_password = Some(gitlab_password);
+        }
     }
 
     // check namespace_id

@@ -1,5 +1,7 @@
+use std::env;
+
 use anyhow::{Context, Result};
-use git2::{Cred, Repository};
+use git2::{Cred, CredentialType, Repository, StatusOptions};
 
 pub struct GitRepo {
     repo: Repository,
@@ -66,10 +68,20 @@ impl GitRepo {
     }
 
     pub fn has_uncommitted_changes(&self) -> Result<bool> {
+        let mut status_opts = StatusOptions::new();
+        status_opts.include_ignored(false);
         let statuses = self
             .repo
-            .statuses(None)
+            .statuses(Some(&mut status_opts))
             .with_context(|| "Failed to get the status of the repository")?;
+
+        statuses.iter().for_each(|s| {
+            tracing::info!(
+                "status: {:?}, path: {:?}",
+                s.status(),
+                s.index_to_workdir().map(|p| p.new_file().path())
+            );
+        });
 
         if !statuses.is_empty() {
             return Ok(true);
@@ -94,10 +106,23 @@ impl GitRepo {
         let name = refs.name().with_context(|| "The reference name is none")?;
 
         let mut callbacks = git2::RemoteCallbacks::new();
+
         callbacks.credentials(|_url, _username_from_url, _allowed_types| {
-            // print username and password
-            tracing::debug!("username: {}, password: {}", &self.username, &self.password);
-            Cred::userpass_plaintext(&self.username, &self.password)
+            // tracing::info!("allowed types: {:?}", _allowed_types);
+
+            if _allowed_types.contains(CredentialType::SSH_KEY) {
+                Cred::ssh_key(
+                    _username_from_url.unwrap(),
+                    Some(std::path::Path::new(&format!(
+                        "{}/.ssh/id_ed25519.pub",
+                        env::var("HOME").unwrap()
+                    ))),
+                    std::path::Path::new(&format!("{}/.ssh/id_ed25519", env::var("HOME").unwrap())),
+                    None,
+                )
+            } else {
+                Cred::userpass_plaintext(&self.username, &self.password)
+            }
         });
 
         let mut options = git2::PushOptions::new();
