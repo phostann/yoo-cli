@@ -49,18 +49,6 @@ struct Cli {
     #[arg(long)]
     gitlab_server: Option<String>,
 
-    /// The gitlab username
-    #[arg(long)]
-    gitlab_username: Option<String>,
-
-    /// The gitlab password
-    #[arg(long)]
-    gitlab_password: Option<String>,
-
-    /// The private key of your gitlab account
-    #[arg(long)]
-    gitlab_private_key: Option<String>,
-
     /// The gitlab token
     #[arg(long)]
     gitlab_token: Option<String>,
@@ -117,6 +105,13 @@ impl Cli {
         std::fs::remove_dir_all(repo_dir).with_context(|| "Failed to remove the repo dir")?;
         Ok(())
     }
+
+    fn unregister(&self) -> Result<()> {
+        if self.repo_name.is_none() {
+            return Ok(());
+        }
+        Ok(())
+    }
 }
 
 /// init the cli
@@ -157,7 +152,6 @@ pub fn init() -> Result<()> {
     tracing::info!("GITLAB_URL: {}", cli.gitlab_server.clone().unwrap());
     tracing::info!("GITLAB_TOKEN: {}", cli.gitlab_token.clone().unwrap());
     tracing::info!("GITLAB_NAMESPACE_ID: {}", cli.gitlab_namespace_id.unwrap());
-    tracing::info!("GITLAB_USERNAME: {}", cli.gitlab_username.clone().unwrap());
     tracing::info!("SERVER_USERNAME: {}", cli.server_username.clone().unwrap());
     // tracing::info!("SERVER_PASSWORD: {}", cli.server_password.clone().unwrap());
 
@@ -171,9 +165,15 @@ pub fn init() -> Result<()> {
                 cli.delete_remote_repo()?;
                 // try to delete the local repo
                 cli.delete_local_repo()?;
+                // try to unregister the repo
+                cli.unregister()?;
                 pb.finish_and_clear();
                 tracing::info!("Successfully cleaned up");
-                Ok(())
+                if cli.debug {
+                    Err(err)
+                } else {
+                    Ok(())
+                }
             }
         },
         Some(Commands::Submit { ref branch }) => submit::submit(&cli, branch.clone()),
@@ -201,36 +201,6 @@ fn check_config(cli: &mut Cli) -> Result<()> {
         let gitlab_token =
             env::var("YOO_GITLAB_TOKEN").with_context(|| "GITLAB_TOKEN is not set")?;
         cli.gitlab_token = Some(gitlab_token);
-    }
-
-    let mut check_user_pass = false;
-
-    // check gitlab private key, if private key is not set, check gitlab username and password
-    if cli.gitlab_private_key.is_none() {
-        match env::var("YOO_GITLAB_PRIVATE_KEY") {
-            Ok(private_key) => {
-                cli.gitlab_private_key = Some(private_key);
-            }
-            Err(_) => {
-                check_user_pass = true;
-            }
-        }
-    }
-
-    if check_user_pass {
-        // if the cli doesn't config the GITLAB_USERNAME, check the env
-        if cli.gitlab_username.is_none() {
-            let gitlab_username =
-                env::var("YOO_GITLAB_USERNAME").with_context(|| "GITLAB_USERNAME is not set")?;
-            cli.gitlab_username = Some(gitlab_username);
-        }
-
-        // if the cli doesn't config the GITLAB_PASSWORD, check the env
-        if cli.gitlab_password.is_none() {
-            let gitlab_password =
-                env::var("YOO_GITLAB_PASSWORD").with_context(|| "GITLAB_PASSWORD is not set")?;
-            cli.gitlab_password = Some(gitlab_password);
-        }
     }
 
     // check namespace_id

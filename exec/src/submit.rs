@@ -3,12 +3,10 @@ use inquire::Select;
 
 use crate::{loading, Cli};
 
-pub(crate) fn submit(cli: &Cli, branch: Option<String>) -> Result<()> {
+pub(crate) fn submit(_: &Cli, branch: Option<String>) -> Result<()> {
     // check if the current dir is a git repo
     let repo = git::open_repo(
         ".",
-        cli.gitlab_username.clone().unwrap(),
-        cli.gitlab_password.clone().unwrap(),
     )?;
 
     // check if there is uncommitted changes

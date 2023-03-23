@@ -47,16 +47,16 @@ struct Project {
 pub(crate) fn create(cli: &mut Cli) -> Result<()> {
     // ask the user for the project name
     let project_name = Text::new("Please enter the project name:")
-    .with_validator(|input: &str| {
-        let pattern = Regex::new(r"^[A-Za-z0-9]+(-[A-Za-z0-9]+)*$")
-            .with_context(|| "Failed to create a regex pattern to check the project name").unwrap();
-        if pattern.is_match(input) {
-            Ok(Validation::Valid)
-        } else {
-            Ok(Validation::Invalid("Your project name is invalid it must match the regexp `^[A-Za-z0-9]+(-[A-Za-z0-9]+)*$`".into()))
-        }
-    })
-    .prompt().with_context(|| "Failed to interact with the user")?;
+        .with_validator(|input: &str| {
+            let pattern = Regex::new(r"^[A-Za-z0-9]+(-[A-Za-z0-9]+)*$")
+                .with_context(|| "Failed to create a regex pattern to check the project name").unwrap();
+            if pattern.is_match(input) {
+                Ok(Validation::Valid)
+            } else {
+                Ok(Validation::Invalid("Your project name is invalid it must match the regexp `^[A-Za-z0-9]+(-[A-Za-z0-9]+)*$`".into()))
+            }
+        })
+        .prompt().with_context(|| "Failed to interact with the user")?;
 
     let desc_validator = required!("The description can't be empty");
     let project_description = Text::new("Please enter the project description:")
@@ -96,11 +96,11 @@ pub(crate) fn create(cli: &mut Cli) -> Result<()> {
                 Emoji("⚠️", style("!!!").red().to_string().as_ref()),
                 project_name
             )
-            .as_str(),
+                .as_str(),
         )
-        .with_default(false)
-        .prompt()
-        .with_context(|| "Failed to interact with the user")?;
+            .with_default(false)
+            .prompt()
+            .with_context(|| "Failed to interact with the user")?;
 
         if ans {
             for ele in arr {
@@ -164,11 +164,9 @@ pub(crate) fn create(cli: &mut Cli) -> Result<()> {
 
     // clone the repo
     let pb = loading("Cloning")?;
-    let git_repo = git::clone(
+    let mut git_repo = git::clone(
         &selection.repo,
         project_path,
-        cli.gitlab_username.clone().unwrap(),
-        cli.gitlab_password.clone().unwrap(),
     )?;
     pb.finish_and_clear();
     tracing::info!(
@@ -192,11 +190,14 @@ pub(crate) fn create(cli: &mut Cli) -> Result<()> {
     tracing::info!("Repo: {}", repo);
 
     // add the remote origin
-    git_repo.set_remote(repo.http_url_to_repo.as_str())?;
+    git_repo.set_remote(repo.ssh_url_to_repo.as_str())?;
     tracing::info!(
         "Successfully added the remote origin: {}",
-        repo.http_url_to_repo
+        repo.ssh_url_to_repo
     );
+
+    // change working dir
+    git_repo.change_working_dir(Some(project_path.to_string()))?;
 
     // push the master branch to the remote origin
     let pb = loading("Pushing")?;
@@ -214,13 +215,16 @@ pub(crate) fn create(cli: &mut Cli) -> Result<()> {
     pb.finish_and_clear();
     tracing::info!("Successfully pushed the dev branch to the remote origin");
 
+    // reset the working dir
+    git_repo.change_working_dir(None)?;
+
     // register the project to the server
     let pb = loading("Registering")?;
     let register_resp = register_project(
         cli,
         &project_name,
         &project_description,
-        &repo.http_url_to_repo,
+        &repo.ssh_url_to_repo,
         repo.id,
     )?;
     pb.finish_and_clear();
@@ -241,7 +245,7 @@ pub(crate) fn create(cli: &mut Cli) -> Result<()> {
 struct RepoResponse {
     id: i32,
     name: String,
-    http_url_to_repo: String,
+    ssh_url_to_repo: String,
     web_url: String,
 }
 
@@ -250,7 +254,7 @@ impl Display for RepoResponse {
         write!(
             f,
             "id: {}, name: {}, ssh_url_to_repo: {}, web_url: {}",
-            self.id, self.name, self.http_url_to_repo, self.web_url
+            self.id, self.name, self.ssh_url_to_repo, self.web_url
         )
     }
 }
@@ -305,6 +309,7 @@ fn register_project(
     repo: &str,
     repo_id: i32,
 ) -> Result<Response<Project>> {
+    tracing::info!("name: {}, description: {}, repo: {}, repo_id: {}", name, description, repo, repo_id);
     let mut authorization = match read_authorization() {
         Ok(auth) => auth,
         Err(_) => {
@@ -313,7 +318,6 @@ fn register_project(
                 cli.server_username.as_ref().unwrap(),
                 cli.server_password.as_ref().unwrap(),
             )?;
-
             write_authorization(&auth)?;
             auth
         }
@@ -341,7 +345,7 @@ fn register_project(
 
             Ok(res)
         }
-        StatusCode::BAD_REQUEST => {
+        StatusCode::BAD_REQUEST | StatusCode::UNAUTHORIZED => {
             authorization = login(
                 cli.server.as_ref().unwrap(),
                 cli.server_username.as_ref().unwrap(),
@@ -432,11 +436,13 @@ fn read_authorization() -> Result<String> {
 fn write_authorization(authorization: &str) -> Result<()> {
     let home_dir = dirs::home_dir().with_context(|| "Failed to get the home dir")?;
     let cache_file = home_dir.join(format!("{}/{}", CACHE_DIR, CACHE_FILE));
+
     // read cache json file
     let mut cache: HashMap<String, String> = HashMap::new();
     let file = OpenOptions::new()
         .read(true)
         .write(true)
+        .truncate(true)
         .create(true)
         .open(cache_file)?;
 
