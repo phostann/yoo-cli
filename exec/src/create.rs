@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use console::{style, Emoji};
-use inquire::{required, validator::Validation, Confirm, Select, Text};
+use inquire::{validator::Validation, Confirm, Select, Text};
 use regex::Regex;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
@@ -58,11 +58,23 @@ pub(crate) fn create(cli: &mut Cli) -> Result<()> {
         })
         .prompt().with_context(|| "Failed to interact with the user")?;
 
-    let desc_validator = required!("The description can't be empty");
     let project_description = Text::new("Please enter the project description:")
-        .with_validator(desc_validator)
         .prompt()
         .with_context(|| "Failed to interact with the user")?;
+
+    // ask the user for the category or the project
+    let category = Text::new("Please enter the category of the project:")
+        .prompt().with_context(|| "Failed to interact with the user")?;
+    let tags: String = Text::new("Please enter the tags of the project, use `,` to separate them:")
+        .prompt().with_context(|| "Failed to interact with the user")?;
+
+    let build_cmd = Text::new("Please enter the build command of the project:")
+        .with_default("yarn build")
+        .prompt().with_context(|| "Failed to interact with the user")?;
+
+    let dist = Text::new("Please enter the dist of the project:")
+        .with_default("build")
+        .prompt().with_context(|| "Failed to interact with the user")?;
 
     // get working directory
     let working_dir = env::current_dir().with_context(|| "Failed to get the current directory")?;
@@ -119,10 +131,12 @@ pub(crate) fn create(cli: &mut Cli) -> Result<()> {
 
     let server_url = cli.server.as_deref().with_context(|| "SERVER is not set")?;
 
+    tracing::debug!("server_url: {}", server_url);
+
     let pb = loading("Fetching the templates")?;
     // show the project list
     let resp = REQUEST
-        .get(format!("{}/templates", server_url))
+        .get(format!("{}/v1/templates", server_url))
         .send()
         .with_context(|| "Failed to get the templates")?;
     // sleep 10 seconds
@@ -220,18 +234,28 @@ pub(crate) fn create(cli: &mut Cli) -> Result<()> {
 
     // register the project to the server
     let pb = loading("Registering")?;
-    let register_resp = register_project(
-        cli,
-        &project_name,
-        &project_description,
-        &repo.ssh_url_to_repo,
-        repo.id,
-    )?;
-    pb.finish_and_clear();
 
-    if register_resp.code != 0 {
-        return Err(anyhow::Error::msg("Failed to register the project"));
-    }
+    let tags = tags.split(',').map(|x| x.trim()).collect::<Vec<&str>>();
+
+    let payload = NewProject {
+        name: project_name.trim(),
+        description: project_description.trim(),
+        pid: repo.id,
+        category: category.trim(),
+        tags,
+        ssh_url: repo.ssh_url_to_repo.as_ref(),
+        http_url: repo.http_url_to_repo.as_ref(),
+        web_url: repo.web_url.as_ref(),
+        build_cmd: build_cmd.trim(),
+        dist: dist.trim(),
+    };
+
+    register_project(
+        cli,
+        &payload,
+    )?;
+
+    pb.finish_and_clear();
 
     tracing::info!("Successfully registered the project to the server");
 
@@ -246,6 +270,7 @@ struct RepoResponse {
     id: i32,
     name: String,
     ssh_url_to_repo: String,
+    http_url_to_repo: String,
     web_url: String,
 }
 
@@ -295,27 +320,29 @@ fn create_new_repo(cli: &Cli, name: &str, description: &str) -> Result<RepoRespo
 }
 
 #[derive(Debug, Serialize)]
-struct NewProject {
-    name: String,
-    description: String,
-    repo: String,
-    repo_id: i32,
+struct NewProject<'a> {
+    name: &'a str,
+    category: &'a str,
+    tags: Vec<&'a str>,
+    ssh_url: &'a str,
+    http_url: &'a str,
+    web_url: &'a str,
+    build_cmd: &'a str,
+    dist: &'a str,
+    pid: i32,
+    description: &'a str,
 }
 
 fn register_project(
     cli: &Cli,
-    name: &str,
-    description: &str,
-    repo: &str,
-    repo_id: i32,
-) -> Result<Response<Project>> {
-    tracing::info!("name: {}, description: {}, repo: {}, repo_id: {}", name, description, repo, repo_id);
+    payload: &NewProject,
+) -> Result<()> {
     let mut authorization = match read_authorization() {
         Ok(auth) => auth,
         Err(_) => {
             let auth = login(
                 cli.server.as_ref().unwrap(),
-                cli.server_username.as_ref().unwrap(),
+                cli.server_email.as_ref().unwrap(),
                 cli.server_password.as_ref().unwrap(),
             )?;
             write_authorization(&auth)?;
@@ -323,43 +350,22 @@ fn register_project(
         }
     };
 
-    let payload = NewProject {
-        name: name.to_string(),
-        description: description.to_string(),
-        repo: repo.to_string(),
-        repo_id,
-    };
-
-    let resp = REQUEST
-        .post(format!("{}/project", cli.server.as_ref().unwrap()))
-        .header("Authorization", &authorization)
-        .json(&payload)
-        .send()
-        .with_context(|| "Failed to register the project")?;
+    let resp = register_project_to_server(cli, &payload, &authorization)?;
 
     match resp.status() {
         StatusCode::OK => {
-            let res = resp
-                .json::<Response<Project>>()
-                .with_context(|| "Failed to parse the response")?;
-
-            Ok(res)
+            Ok(())
         }
         StatusCode::BAD_REQUEST | StatusCode::UNAUTHORIZED => {
             authorization = login(
                 cli.server.as_ref().unwrap(),
-                cli.server_username.as_ref().unwrap(),
+                cli.server_email.as_ref().unwrap(),
                 cli.server_password.as_ref().unwrap(),
             )?;
 
             write_authorization(&authorization)?;
 
-            let resp = REQUEST
-                .post(format!("{}/project", cli.server.as_ref().unwrap()))
-                .header("Authorization", &authorization)
-                .json(&payload)
-                .send()
-                .with_context(|| "Failed to register the project")?;
+            let resp = register_project_to_server(cli, &payload, &authorization)?;
 
             if resp.status() != StatusCode::OK {
                 return Err(anyhow::Error::msg(
@@ -367,16 +373,21 @@ fn register_project(
                 ));
             }
 
-            let res = resp
-                .json::<Response<Project>>()
-                .with_context(|| "Failed to parse the response")?;
-
-            Ok(res)
+            Ok(())
         }
         _ => Err(anyhow::Error::msg(
             "Failed to register the project".to_string(),
         )),
     }
+}
+
+fn register_project_to_server(cli: &Cli, payload: &&NewProject, authorization: &String) -> Result<reqwest::blocking::Response> {
+    REQUEST
+        .post(format!("{}/v1/projects", cli.server.as_ref().unwrap()))
+        .header("Authorization", authorization)
+        .json(&payload)
+        .send()
+        .with_context(|| "Failed to register the project")
 }
 
 #[derive(Debug, Deserialize)]
@@ -387,13 +398,13 @@ struct AuthBody {
     token_type: String,
 }
 
-fn login(server_url: &str, username: &str, password: &str) -> Result<String> {
+fn login(server_url: &str, email: &str, password: &str) -> Result<String> {
     let mut map = HashMap::new();
-    map.insert("username", username);
+    map.insert("email", email);
     map.insert("password", password);
 
     let resp = REQUEST
-        .post(format!("{}/login", server_url))
+        .post(format!("{}/v1/users/login", server_url))
         .json(&map)
         .send()?;
 

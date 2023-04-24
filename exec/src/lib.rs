@@ -37,9 +37,9 @@ struct Cli {
     #[arg(long)]
     server: Option<String>,
 
-    /// The yoo server username
+    /// The yoo server email
     #[arg(long)]
-    server_username: Option<String>,
+    server_email: Option<String>,
 
     /// The yoo server password
     #[arg(long)]
@@ -152,7 +152,7 @@ pub fn init() -> Result<()> {
     tracing::info!("GITLAB_URL: {}", cli.gitlab_server.clone().unwrap());
     tracing::info!("GITLAB_TOKEN: {}", cli.gitlab_token.clone().unwrap());
     tracing::info!("GITLAB_NAMESPACE_ID: {}", cli.gitlab_namespace_id.unwrap());
-    tracing::info!("SERVER_USERNAME: {}", cli.server_username.clone().unwrap());
+    tracing::info!("SERVER_USERNAME: {}", cli.server_email.clone().unwrap());
     // tracing::info!("SERVER_PASSWORD: {}", cli.server_password.clone().unwrap());
 
     match cli.command {
@@ -213,10 +213,10 @@ fn check_config(cli: &mut Cli) -> Result<()> {
     }
 
     // check username
-    if cli.server_username.is_none() {
+    if cli.server_email.is_none() {
         let username =
-            env::var("YOO_SERVER_USERNAME").with_context(|| "SERVER_USERNAME is not set")?;
-        cli.server_username = Some(username);
+            env::var("YOO_SERVER_EMAIL").with_context(|| "SERVER_EMAIL is not set")?;
+        cli.server_email = Some(username);
     }
 
     // check password

@@ -2,8 +2,9 @@ use std::process::Command;
 use anyhow::{Context, Error, Result};
 
 pub fn exec_git_command(args: &Vec<&str>, working_dir: Option<&str>) -> Result<String> {
-    let output = Command::new("git").args(args)
+    let output = Command::new("git")
         .current_dir(if let Some(working_dir) = working_dir { working_dir } else { "." })
+        .args(args)
         .output()
         .with_context(|| "Failed to execute the git command")?;
 
