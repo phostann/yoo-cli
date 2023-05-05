@@ -1,6 +1,6 @@
-use anyhow::{Context, Result};
-use git2::{CredentialType, Repository, StatusOptions};
 use crate::exec::exec_git_command;
+use anyhow::{Context, Result};
+use git2::{Repository, StatusOptions};
 
 mod exec;
 

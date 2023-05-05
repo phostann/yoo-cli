@@ -1,6 +1,8 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use create::{login, read_authorization, write_authorization};
 use once_cell::sync::Lazy;
+use reqwest::StatusCode;
 use std::env;
 use tracing::metadata::LevelFilter;
 use tracing_subscriber::{prelude::__tracing_subscriber_SubscriberExt, Layer};
@@ -45,21 +47,9 @@ struct Cli {
     #[arg(long)]
     server_password: Option<String>,
 
-    /// The gitlab server address
-    #[arg(long)]
-    gitlab_server: Option<String>,
+    project_id: Option<i32>,
 
-    /// The gitlab token
-    #[arg(long)]
-    gitlab_token: Option<String>,
-
-    /// The gitlab group id
-    #[arg(long)]
-    gitlab_namespace_id: Option<u32>,
-
-    repo_id: Option<i32>,
-
-    repo_name: Option<String>,
+    project_name: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -75,43 +65,77 @@ enum Commands {
 }
 
 impl Cli {
-    fn delete_remote_repo(&self) -> Result<()> {
-        if self.repo_id.is_none() {
+    fn delete_project(&self) -> Result<()> {
+        if self.project_id.is_none() {
+            tracing::debug!("Project id is none");
             return Ok(());
         }
-        REQUEST
-            .delete(format!(
-                "{}/api/v4/projects/{}",
-                self.gitlab_server.clone().unwrap(),
-                self.repo_id.unwrap()
-            ))
-            .header("PRIVATE-TOKEN", self.gitlab_token.clone().unwrap())
-            .send()
-            .with_context(|| "Failed to delete the repo")?;
 
-        Ok(())
+        let mut authorization = match read_authorization() {
+            Ok(auth) => auth,
+            Err(_) => {
+                let auth = login(
+                    self.server.as_ref().unwrap(),
+                    self.server_email.as_ref().unwrap(),
+                    self.server_password.as_ref().unwrap(),
+                )?;
+                write_authorization(&auth)?;
+                auth
+            }
+        };
+
+        let resp = delete_project_from_server(self, &authorization)?;
+
+        match resp.status() {
+            StatusCode::OK => Ok(()),
+            StatusCode::BAD_REQUEST => {
+                authorization = login(
+                    self.server.as_ref().unwrap(),
+                    self.server_email.as_ref().unwrap(),
+                    self.server_password.as_ref().unwrap(),
+                )?;
+
+                write_authorization(&authorization)?;
+
+                let resp = delete_project_from_server(self, &authorization)?;
+
+                if resp.status() != StatusCode::OK {
+                    return Err(anyhow::Error::msg("Failed to delete the project"));
+                }
+
+                Ok(())
+            }
+            _ => Err(anyhow::Error::msg("Failed to delete the project"))?,
+        }
+
+        // Ok(())
     }
 
     fn delete_local_repo(&self) -> Result<()> {
-        if self.repo_name.is_none() {
+        if self.project_name.is_none() {
             return Ok(());
         }
         // get working dir
         let working_dir =
             env::current_dir().with_context(|| "Failed to get the current directory")?;
         // get the repo dir
-        let repo_dir = working_dir.join(self.repo_name.clone().unwrap());
+        let repo_dir = working_dir.join(self.project_name.clone().unwrap());
         // remove the repo dir
         std::fs::remove_dir_all(repo_dir).with_context(|| "Failed to remove the repo dir")?;
         Ok(())
     }
+}
 
-    fn unregister(&self) -> Result<()> {
-        if self.repo_name.is_none() {
-            return Ok(());
-        }
-        Ok(())
-    }
+fn delete_project_from_server(
+    cli: &Cli,
+    authorization: &String,
+) -> Result<reqwest::blocking::Response, anyhow::Error> {
+    let resp = REQUEST
+        .delete(format!("/v1/projects/{}", cli.project_id.unwrap()))
+        .header("Authorization", authorization)
+        .send()
+        .with_context(|| "Failed to delete the project")?;
+    Ok(resp)
 }
 
 /// init the cli
@@ -149,9 +173,6 @@ pub fn init() -> Result<()> {
     // print the configuration
     tracing::info!("Your configuration is as follows: ");
     tracing::info!("SERVER_URL: {}", cli.server.clone().unwrap());
-    tracing::info!("GITLAB_URL: {}", cli.gitlab_server.clone().unwrap());
-    tracing::info!("GITLAB_TOKEN: {}", cli.gitlab_token.clone().unwrap());
-    tracing::info!("GITLAB_NAMESPACE_ID: {}", cli.gitlab_namespace_id.unwrap());
     tracing::info!("SERVER_USERNAME: {}", cli.server_email.clone().unwrap());
     // tracing::info!("SERVER_PASSWORD: {}", cli.server_password.clone().unwrap());
 
@@ -162,11 +183,10 @@ pub fn init() -> Result<()> {
                 tracing::error!("Failed to create the repo: {}", err);
                 let pb = loading("Cleaning up...")?;
                 // try to delete the remote repo
-                cli.delete_remote_repo()?;
+                cli.delete_project()?;
                 // try to delete the local repo
                 cli.delete_local_repo()?;
-                // try to unregister the repo
-                cli.unregister()?;
+
                 pb.finish_and_clear();
                 tracing::info!("Successfully cleaned up");
                 if cli.debug {
@@ -189,33 +209,9 @@ fn check_config(cli: &mut Cli) -> Result<()> {
         cli.server = Some(server_url);
     }
 
-    // if the cli doesn't config the GITLAB_SERVER, check the env
-    if cli.gitlab_server.is_none() {
-        let gitlab_url =
-            env::var("YOO_GITLAB_SERVER").with_context(|| "GITLAB_SERVER is not set")?;
-        cli.gitlab_server = Some(gitlab_url);
-    }
-
-    // if the cli doesn't config the GITLAB_TOKEN, check the env
-    if cli.gitlab_token.is_none() {
-        let gitlab_token =
-            env::var("YOO_GITLAB_TOKEN").with_context(|| "GITLAB_TOKEN is not set")?;
-        cli.gitlab_token = Some(gitlab_token);
-    }
-
-    // check namespace_id
-    if cli.gitlab_namespace_id.is_none() {
-        let namespace_id = env::var("YOO_GITLAB_NAMESPACE_ID")
-            .with_context(|| "GITLAB_NAMESPACE_ID is not set")?
-            .parse()
-            .with_context(|| "GITLAB_NAMESPACE_ID is not a number")?;
-        cli.gitlab_namespace_id = Some(namespace_id);
-    }
-
     // check username
     if cli.server_email.is_none() {
-        let username =
-            env::var("YOO_SERVER_EMAIL").with_context(|| "SERVER_EMAIL is not set")?;
+        let username = env::var("YOO_SERVER_EMAIL").with_context(|| "SERVER_EMAIL is not set")?;
         cli.server_email = Some(username);
     }
 
